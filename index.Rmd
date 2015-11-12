@@ -2,89 +2,106 @@
 title: "Activity data analysis"
 output: html_document
 ---
+Summary
+----------------------
+In this project we analyze personal activity data collected with appropriate devices in order to identify different ways of accomplishing exercises. The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. As the result of the work we are able to identify way of doing exercises with more than 99% accuracy.
+
+Getting data
+----------------------------
+First let's get data from the known urls and look at it
 
 ```{r}
-library(caret)
-setwd("c:/Users/Basov_il/Documents/GitHub/ExercisesAnalysis/")
-train<-read.csv("train.csv")
-
+train<-read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"))
+test<-read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"))
+    
 str(train)
-head(train$classe)
+```
 
+Let's see if classes are balanced across the dataset (it's representable).
+```{r}
+barplot(table(train$classe))
+```
+
+it's quite balanced so let's prepare data.
+
+Preparing data
+--------------------------------------
+Now let's split training data on two samples: one for training and choosing model, another for checking accuracy for general case.
+```{r}
+library(caret)
 set.seed(123)
 inTrain<-createDataPartition(train$classe, p=0.8, list=FALSE)
 training<-train[inTrain,]
 testing<-train[-inTrain,]
+```
+We want to check dataset for features with variance close to 0, cause they won't give much help to us.
 
+```{r}
 nzv<-nearZeroVar(training, saveMetrics=TRUE)
 training<-training[,nzv$nzv==F]
-M<-abs(cor(subset(training, select=-classe)))
+```
+
+Also when we looked at dataset we saw a lot of NAs in data, so we'd like to inspect how many of them are realy there for different features.
+
+```{r}
 propNA<-function(x){
     sum(is.na(x))/dim(training)[1]
 }
 
 tableNA<-sapply(training, propNA)
 unique(tableNA)
-training<-training[tableNA==0]
-str(training)
-
------------------------------
-
-
-model<-train(classe~., data=training, method="glm")
-model$finalModel
-preds<-predict(model, testing)
-confusionMatrix(preds, testing$classe)
-
-folds<-createFolds(training$classe, k=10, list=TRUE, returnTrain=TRUE)
-sapply(folds, length)
-
-folds<-createResample(training$classe, times=10, list=TRUE)
-sapply(folds, length)
-
-featurePlot(x=training, y=training$classe, plot="pairs")
-
-library(ggplot2)
-qq<-qplot(classe, age, colour=sex, data=training)
-qq+geom_smooth(method="lm", fprmula=y~x)
-
-cutAge<-cut2(training$Age, g=3)
-t1<-table(cutAge, classe)
-prop.table(t1,1)
-qplot(cutAge, age, data=training, fill=cutAge, geom=c("boxplot"))
-qplot(age, data=training, geom=c("density"))
-
-preObj<-preProcess(training[,-58], method=c("center","scale"))
-training$Age<-predict(preObj, training[,58])$Age
-
-preObj<-preProcess(training[,-58], method="knnImpute")
-
-dummies<-dummyVars(classe~age, data=training)
-predict(dummies, newdata=training)
-
-
-
-library(splines)
-bsBasis<-bs(training$Age, df=3)
-lm1<-lm(calsse~bsBasis, data=training)
-predict(bsBasis, age=testing$Age)
-
-M<-abs(cor(training[,-58]))
-diag(M)<-0
-which(M>0.8, arr.ind=T)
-
-pr<-prcomp(training[,c()])
-plot(pr$x[,1], pr$x[,2])
-prcomp(log10(training[,-58]+1))
-preProcess(log10(training[,-58]+1), method="pca", pcaComp=2)
-model<-train(classe~., method="glm", data=trainPC)
-
-model<-train(classe~., method="rpart", data=trainPC)
-model<-train(classe~., method="rf", data=trainPC)
-model<-train(classe~., method="gbm", data=trainPC)
-model<-train(classe~., method="lda", data=trainPC)
-model<-train(classe~., method="nb", data=trainPC)
-
-library(rattle)
-fancyRpartPlot(modFit$finalModel)
 ```
+So we only have features with 0 amount of NAs or with 97,5% of NAs. We can surely delete the latter.
+
+```{r}
+training<-training[tableNA==0]
+```
+Before we go to modeling let's also delete features that havw no useful data for our predictive models.
+```{r}
+training<-subset(training, select=-c(X,user_name,cvtd_timestamp))
+```
+Now we've got only 56 variables instead of 160 and they all are numeric.
+
+Choosing model
+---------------------------
+
+We'll try two models for our training dataset: simple tree and random forest. We'll compare their accuracy on training set using cross validation with 10 folds and then choose one of them based on this estimate. 
+```{r}
+library(randomForest)
+library(rpart)
+folds<-createFolds(training$classe, k=10, list=TRUE, returnTrain=TRUE)
+err1<-0
+err2<-0
+for (k in 1:10){
+    inds<-folds[[k]]
+    trainData<-training[inds,]
+    testData<-training[-inds,]
+    model1<-rpart(classe~., data=trainData, method="class")
+    model2<-randomForest(classe~., data=trainData)
+    preds1<-predict(model1, testData, type="class")
+    preds2<-predict(model2, testData, type="class")
+    err1<-err1+sum(preds1==testData$classe)/dim(testData)[1]
+    err2<-err2+sum(preds2==testData$classe)/dim(testData)[1]
+}
+```
+
+Training accuracy for simple tree: `r err1/10`
+
+Training accuracy for random forest: `r err2/10`
+
+So we see that random model is the best fit. Let's now train it on the whole training dataset and check accuracy on testing dataset in order to get estimate of accuracy for future data.
+```{r}
+model<-randomForest(classe~., data=training)
+preds<-predict(model, testing, type="class")
+confusionMatrix(preds, testing$classe)
+```
+Making predictions for ulabeled data set
+-----------------------------------------
+Since our only preparation for training data was selecting variables, we can directly fit our model to test set without explicitly preparing it.
+```{r}
+preds<-predict(model, test, type="class")
+preds
+```
+Conclusions
+-----------------------------
+Using random forests as model family we were able to build classifier with more then 99% accuracy on test data.
